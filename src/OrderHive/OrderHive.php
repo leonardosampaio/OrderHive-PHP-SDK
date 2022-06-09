@@ -42,7 +42,27 @@ class OrderHive
      * @var string
      */
     protected $refresh_token = '';
-	
+
+	/**
+     * @var string
+     */
+    protected $refresh_token_cache_path = '';
+
+	/**
+     * @var int
+     */
+    protected $refresh_token_cache_ttl_in_minutes = 0;
+
+	/**
+     * @var int
+     */
+    protected $refresh_token_retry_number = 0;
+
+	/**
+     * @var int
+     */
+    protected $refresh_token_retry_interval_in_minutes = 0;
+
 	/**
 	 * @var array
 	 */
@@ -87,6 +107,22 @@ class OrderHive
             throw new OrderHiveException('Config "refresh_token" is required');
         }
 
+		if (isset($config['refresh_token_cache_path'])) {
+			$this->refresh_token_cache_path = $config['refresh_token_cache_path'];
+        }
+
+		if (isset($config['refresh_token_cache_ttl_in_minutes'])) {
+			$this->refresh_token_cache_ttl_in_minutes = $config['refresh_token_cache_ttl_in_minutes'];
+        }
+
+		if (isset($config['refresh_token_retry_number'])) {
+			$this->refresh_token_retry_number = $config['refresh_token_retry_number'];
+        }
+
+		if (isset($config['refresh_token_retry_interval_in_minutes'])) {
+			$this->refresh_token_retry_interval_in_minutes = $config['refresh_token_retry_interval_in_minutes'];
+        }
+
         $this->headers = [
             'content-type' => 'application/json',
             'host' => self::HOST
@@ -110,12 +146,58 @@ class OrderHive
         }
     }
 
+	/**
+	 * Reuse refresh tokens if generated in the last
+	 * refresh_token_cache_ttl_in_minutes.
+	 * 
+	 * https://orderhive.docs.apiary.io/#reference/account/refresh-token/refresh-token
+	 */
+	private function getRefreshToken()
+	{
+		if (!empty($this->refresh_token_cache_path) &&
+			0 !== $this->refresh_token_cache_ttl_in_minutes &&
+			($jsonContent = file_get_contents($this->refresh_token_cache_path)) &&
+			($currentRefreshToken = json_decode($jsonContent, true)) &&
+			$currentRefreshToken['date'] &&
+			(new \DateTime($currentRefreshToken['date']))->diff(new \DateTime("now"))->format('%i') < $this->refresh_token_cache_ttl_in_minutes)
+		{
+			return $currentRefreshToken;
+		}
+		
+		$retry = false;
+		do
+		{
+			if ($retry)
+			{
+				sleep($this->refresh_token_retry_interval_in_minutes * 60);
+				$this->refresh_token_retry_number--;
+			}
+
+			$newRefreshToken = $this->client->post('/setup/refreshtokenviaidtoken', [
+				'id_token' => $this->id_token,
+				'refresh_token' => $this->refresh_token,
+			]);
+		}
+		while (($retry = !empty($newRefreshToken['errors'])) && 0 !== $this->refresh_token_retry_number);
+
+		if ($retry)
+		{
+			throw new OrderHiveException('API error(s): ' . implode(' ', $newRefreshToken['errors']));
+		}
+
+		if ($this->refresh_token_cache_path)
+		{
+			$newRefreshToken['date'] = date('Y-m-d H:i:s');
+			file_put_contents($this->refresh_token_cache_path, json_encode($newRefreshToken));
+		}
+
+		return $newRefreshToken;
+	}
+
     private function signRequest($cmd, $httpMethodName = 'POST', $queryParams = [], $postParams = [])
     {
-        $response = $this->client->post('/setup/refreshtokenviaidtoken', [
-            'id_token' => $this->id_token,
-            'refresh_token' => $this->refresh_token,
-        ]);
+		$response = $this->getRefreshToken();
+
         // obtained on refresh token
         $this->client->addHeader('id_token', $response['id_token']);
         // current Date Time ('YmdTHMSZ' format)
