@@ -159,7 +159,7 @@ class OrderHive
 			($jsonContent = file_get_contents($this->refresh_token_cache_path)) &&
 			($currentRefreshToken = json_decode($jsonContent, true)) &&
 			$currentRefreshToken['date'] &&
-			(new \DateTime($currentRefreshToken['date']))->diff(new \DateTime("now"))->format('%i') < $this->refresh_token_cache_ttl_in_minutes)
+			((strtotime('now') - strtotime($currentRefreshToken['date']))/60) < $this->refresh_token_cache_ttl_in_minutes)
 		{
 			return $currentRefreshToken;
 		}
